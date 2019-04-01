@@ -64,3 +64,12 @@ func (s *scope) canRecurse() bool {
 	// the budget.
 	return s.budget > 0 && coin()
 }
+
+type Context struct {
+	fnClass tree.FunctionClass
+}
+
+var (
+	emptyCtx   = Context{}
+	groupByCtx = Context{fnClass: tree.AggregateClass}
+)

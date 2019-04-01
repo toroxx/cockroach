@@ -15,6 +15,8 @@
 package sqlsmith
 
 import (
+	"fmt"
+
 	"github.com/cockroachdb/cockroach/pkg/sql/coltypes"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/types"
@@ -28,44 +30,54 @@ var (
 
 func init() {
 	scalars = []scalarWeight{
-		{10, makeAnd},
-		{5, makeCaseExpr},
-		{1, makeCoalesceExpr},
-		{20, makeColRef},
-		{10, makeBinOp},
+		{10, scalarNoContext(makeAnd)},
+		{5, scalarNoContext(makeCaseExpr)},
+		{1, scalarNoContext(makeCoalesceExpr)},
+		{20, scalarNoContext(makeColRef)},
+		{10, scalarNoContext(makeBinOp)},
+		{2, scalarNoContext(makeScalarSubquery)},
+		{2, scalarNoContext(makeExists)},
+		{2, scalarNoContext(makeIn)},
+		{2, scalarNoContext(makeStringComparison)},
+		{5, scalarNoContext(makeAnd)},
+		{5, scalarNoContext(makeOr)},
+		{5, scalarNoContext(makeNot)},
 		{10, makeFunc},
-		{2, makeScalarSubquery},
-		{2, makeExists},
-		{2, makeIn},
-		{2, makeStringComparison},
-		{5, makeAnd},
-		{5, makeOr},
-		{5, makeNot},
-		{10, func(s *scope, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
+		{10, func(s *scope, ctx Context, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
 			return makeConstExpr(s, typ, refs), true
 		}},
 	}
 	scalarWeights = extractWeights(scalars)
 
 	bools = []scalarWeight{
-		{1, makeColRef},
-		{1, makeAnd},
-		{1, makeOr},
-		{1, makeNot},
-		{1, makeCompareOp},
-		{1, makeIn},
-		{1, makeStringComparison},
-		{1, func(s *scope, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
+		{1, scalarNoContext(makeColRef)},
+		{1, scalarNoContext(makeAnd)},
+		{1, scalarNoContext(makeOr)},
+		{1, scalarNoContext(makeNot)},
+		{1, scalarNoContext(makeCompareOp)},
+		{1, scalarNoContext(makeIn)},
+		{1, scalarNoContext(makeStringComparison)},
+		{1, func(s *scope, ctx Context, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
 			return makeScalar(s, typ, refs), true
 		}},
-		{1, makeExists},
+		{1, scalarNoContext(makeExists)},
+		{1, makeFunc},
 	}
 	boolWeights = extractWeights(bools)
 }
 
+// TODO(mjibson): remove this and correctly pass around the Context.
+func scalarNoContext(fn func(*scope, types.T, colRefs) (tree.TypedExpr, bool)) scalarFn {
+	return func(s *scope, ctx Context, t types.T, refs colRefs) (tree.TypedExpr, bool) {
+		return fn(s, t, refs)
+	}
+}
+
+type scalarFn func(*scope, Context, types.T, colRefs) (expr tree.TypedExpr, ok bool)
+
 type scalarWeight struct {
 	weight int
-	fn     func(*scope, types.T, colRefs) (expr tree.TypedExpr, ok bool)
+	fn     scalarFn
 }
 
 func extractWeights(weights []scalarWeight) []int {
@@ -79,22 +91,31 @@ func extractWeights(weights []scalarWeight) []int {
 // makeScalar attempts to construct a scalar expression of the requested type.
 // If it was unsuccessful, it will return false.
 func makeScalar(s *scope, typ types.T, refs colRefs) tree.TypedExpr {
-	return makeScalarSample(s.schema.scalars, scalars, s, typ, refs)
+	return makeScalarContext(s, emptyCtx, typ, refs)
+}
+
+func makeScalarContext(s *scope, ctx Context, typ types.T, refs colRefs) tree.TypedExpr {
+	return makeScalarSample(s.schema.scalars, scalars, s, ctx, typ, refs)
 }
 
 func makeBoolExpr(s *scope, refs colRefs) tree.TypedExpr {
-	return makeScalarSample(s.schema.bools, bools, s, types.Bool, refs)
+	return makeScalarSample(s.schema.bools, bools, s, emptyCtx, types.Bool, refs)
 }
 
 func makeScalarSample(
-	sampler *WeightedSampler, weights []scalarWeight, s *scope, typ types.T, refs colRefs,
+	sampler *WeightedSampler,
+	weights []scalarWeight,
+	s *scope,
+	ctx Context,
+	typ types.T,
+	refs colRefs,
 ) tree.TypedExpr {
 	if s.canRecurse() {
 		for {
 			// No need for a retry counter here because makeConstExpr well eventually
 			// be called and it always succeeds.
 			idx := sampler.Next()
-			result, ok := weights[idx].fn(s, typ, refs)
+			result, ok := weights[idx].fn(s, ctx, typ, refs)
 			if ok {
 				return result
 			}
@@ -264,9 +285,9 @@ func makeBinOp(s *scope, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
 	), true
 }
 
-func makeFunc(s *scope, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
+func makeFunc(s *scope, ctx Context, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
 	typ = pickAnyType(typ)
-	fns := functions[typ.Oid()]
+	fns := functions[ctx.fnClass][typ.Oid()]
 	if len(fns) == 0 {
 		return nil, false
 	}
@@ -279,6 +300,9 @@ func makeFunc(s *scope, typ types.T, refs colRefs) (tree.TypedExpr, bool) {
 
 	// Cast the return and arguments to prevent ambiguity during function
 	// implementation choosing.
+	if ctx.fnClass != 0 {
+		fmt.Println("FOUND", fn.def.Name)
+	}
 	return castType(tree.NewTypedFuncExpr(
 		tree.ResolvableFunctionReference{FunctionReference: fn.def},
 		0, /* aggQualifier */

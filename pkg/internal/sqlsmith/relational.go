@@ -357,6 +357,7 @@ func (s *scope) makeSelectClause(
 	clause.Where = s.makeWhere(fromRefs)
 	orderByRefs = fromRefs
 	selectListRefs := fromRefs
+	var ctx Context
 
 	if d6() <= 2 {
 		// Enable GROUP BY. Choose some random subset of the
@@ -374,9 +375,10 @@ func (s *scope) makeSelectClause(
 		clause.Having = s.makeHaving(groupByRefs)
 		selectListRefs = groupByRefs
 		orderByRefs = groupByRefs
+		ctx = groupByCtx
 	}
 
-	selectList, selectRefs, ok := s.makeSelectList(desiredTypes, selectListRefs)
+	selectList, selectRefs, ok := s.makeSelectList(ctx, desiredTypes, selectListRefs)
 	if !ok {
 		return nil, nil, nil, nil, false
 	}
@@ -421,7 +423,7 @@ func (s *scope) makeSelect(desiredTypes []types.T, refs colRefs) (*tree.Select, 
 }
 
 func (s *scope) makeSelectList(
-	desiredTypes []types.T, refs colRefs,
+	ctx Context, desiredTypes []types.T, refs colRefs,
 ) (tree.SelectExprs, colRefs, bool) {
 	if len(desiredTypes) == 0 {
 		panic("expected desiredTypes")
@@ -429,7 +431,7 @@ func (s *scope) makeSelectList(
 	result := make(tree.SelectExprs, len(desiredTypes))
 	selectRefs := make(colRefs, len(desiredTypes))
 	for i, t := range desiredTypes {
-		result[i].Expr = makeScalar(s, t, refs)
+		result[i].Expr = makeScalarContext(s, ctx, t, refs)
 		alias := s.schema.name("col")
 		result[i].As = tree.UnrestrictedName(alias)
 		selectRefs[i] = &colRef{
